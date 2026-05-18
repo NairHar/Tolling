@@ -34,7 +34,7 @@ IDX_FUEL=3
 IDX_CARBON=4
 
 #Extended state
-ExtState=namedtuple('ExtState','state', 'duration', 'periods')
+ExtState=namedtuple(typename='ExtState',field_names=('state', 'duration', 'restarts' ,'periods'))
 ExtState.__repr__ = lambda self: 'es(u={},d={},r={},n={})'.format(
     *list(self._asdict().values())
 )
@@ -105,7 +105,7 @@ class Valuation(object):
         self.start_date=np.datetime64(self.tolling.start_date)
         self.end_date=np.datetime64(self.tolling.end_date)
         #params
-        str_final=kwargs.pop('str_final', STR_OFF)
+        str_final=kwargs.pop('state_final', STR_OFF)
         assert str_final in {STR_OFF, STR_ON}
         self.state_final = 0 if str_final==STR_OFF else max(self._states())
         assert not kwargs, 'Invalid params: {}'.format(kwargs)
@@ -115,7 +115,7 @@ class Valuation(object):
         self.feasible_periods=len(self._generate_times())
         self.feasible_restarts=self._feasible_restarts()
         self.feasible_min_on, self.feasible_min_off =\
-            self._feasible_min_on_off()
+            self._feasible_min_onoff()
         self.state_graph = self._build_state_graph()
         self.state_graph_rev = self.state_graph.reverse(copy=True)
 
@@ -130,7 +130,7 @@ class Valuation(object):
         p /= max(2, time_params.ramp_up, time_params.ramp_down)
         return int(math.ceil(p))
     
-    def _feasible_min_on_off(self):
+    def _feasible_min_onoff(self):
         time_params = self.tolling.plant_params.time
         return [min(self.feasible_periods, xd) for xd in 
                 [time_params.min_on, time_params.min_off]]
@@ -141,10 +141,13 @@ class Valuation(object):
     
     def _states(self):
         rdn, rup=self._ramp_levels()
-        return list(range(rdn, rup+2))
+        return list(range(rdn, rup + 2))
     
     def _to_onoff(self, u):
         return 1 if u == self.on_state else (-1 if u==0 else 0)
+    
+    def _is_on(self, u):
+        return u==self.on_state
     
     @staticmethod
     def _is_off(u):
@@ -183,16 +186,16 @@ class Valuation(object):
 
     def _duration_transition(self, d0, u0, u1, reverse):
         #from (d0 at u0), determine {d1} given u1.
-        assert self.feasible_duration
+        assert self.feasible_duration, 'Invalid duration {}'.format(d0)
         f1=self._to_onoff(u1)
-        i_rev=-1 if reverse else 1
-        i_same=self._to_onoff(u0)*f1 > 0
+        i_rev = -1 if reverse else 1
+        i_same = self._to_onoff(u0)*f1 > 0
         min_off, min_on= self.feasible_min_off, self.feasible_min_on
         if i_same:
-            d1=d0+i_rev*f1
+            d1=d0+ i_rev*f1
         else:
-            dmax=-min_off*self._is_off(u1) + min_on *self._is_on(u1)
-            d1=dmax if reverse else f1
+            dmax= -min_off*self._is_off(u1) + min_on * self._is_on(u1)
+            d1= dmax if reverse else f1
         #in the reverse direction, can remain also stay at min_on/min_off
         can_stay_onoff = (reverse and i_same and (-d0==min_off or d0==min_on))
         d1s={d1,d0} if can_stay_onoff else {d1}
@@ -208,7 +211,7 @@ class Valuation(object):
         else:
             u0, u1, i_rev = (u1,u0,-1) if reverse else (u0,u1,1)
             u0, u1 = map(abs, (u0, u1))
-            r1 = r0+i_rev*(u0==0 and u1!=0)
+            r1 = r0+ i_rev*(u0==0 and u1!=0)
         return r1 if 0<=r1 <= max_restarts else None
     
     def _periods_transition(self, n0, u0, u1, reverse):
@@ -247,7 +250,7 @@ class Valuation(object):
                  or (1-is_on and 1-is_off and d==0))
         )
     
-    def ext_state_transition(self, es0, u1, reverse):
+    def _ext_state_transition(self, es0, u1, reverse):
         #from (es0 at u0), determine {es1} given u1.
         r1 = self._restarts_transition(es0.restarts, es0.state, u1, reverse)
         n1 = self._periods_transition(es0.periods, es0.state, u1, reverse)
@@ -306,7 +309,7 @@ class Valuation(object):
     
     def _optimal_payoff(self, q, u, x_power, x_fuel, x_carbon):
         #for generation levels[q], u and prices, determine opt level and value
-        params = self.tolloing.plant_params
+        params = self.tolling.plant_params
         if not u:
             q_opt, payoff = 0,0
         else:
@@ -336,9 +339,10 @@ class Valuation(object):
     def _generate_times(self, env=None):
         dt, _ = self._freq_tuple()
         start_date = (
-            max(self.start_date, np.datetime64(env.pricing_date())) if env 
+            max(self.start_date, np.datetime64(env.pricing_date)) if env 
             else self.start_date
         )
+        return np.arange(start_date, self.end_date + 1, step = dt)
 
     def _freq_tuple(self):
         n, span, n_per_year = EXERCISE_TO_FREQ[self.tolling.exercise_type]
@@ -347,31 +351,31 @@ class Valuation(object):
     def _markets(self):
         #market and market boolean flags for those products
         prd = self.tolling
-        markets = [prd.power_market, prd.fuel_market, prd.carbon_market]
-        return list(map(np.array, (markets, list(map(bool, markets)))))
+        mkts = [prd.power_market, prd.fuel_market, prd.carbon_market]
+        return list(map(np.array, (mkts, list(map(bool, mkts)))))
     
     def _prices(self, times, env):
         mkts, has_mkts = self._markets()
         prices = np.zeros(shape=(len(times),2+sum(has_mkts)), dtype=np.float64)
         prices[:, IDX_TIMES]=times
-        prices[:, IDX_DISCOUNT]=[env.discount_factor(env.currency(), y) for 
+        prices[:, IDX_DISCOUNT]=[env.discount_factor(env.currency, y) for 
                                  y in times.astype(datetime.datetime)]
         active_mkts = mkts[has_mkts]
         for t,p in enumerate(times):
-            prices[t, IDX_POWER:]=[env.price(m, contracts=p) for m in active_mkts]
+            prices[t, IDX_POWER:]=[env.get_price(m,times[t]) for m in active_mkts]
         return prices
     
     def intrinsic(self, env):
         start_date = self.tolling.start_date
-        if env.pricing_date() > start_date:
+        if env.pricing_date > start_date:
             cost, policy, capacity = [0], [], []
         else:
-            prices = self._prices(self._generate_time(env), env)
+            prices = self._prices(self._generate_times(env), env)
             cost, policy, capacity = self._determine_policy(prices)
-        df = env.discount_factor(env.currency(), start_date)
+        df = env.discount_factor(env.currency, start_date)
         return cost[0]*df, policy, capacity
     
-    def _determin_policy(self, prices):
+    def _determine_policy(self, prices):
         #determine the optimal policy and cost given the prices.
         #to be implemented
         gen_levels = self.tolling.plant_params.capacity.gen_levels
@@ -380,13 +384,13 @@ class Valuation(object):
         es_cost = np.empty(shape=nt,dtype=object)
 
         def empty_policy():
-            return PolicyCost(np.iinfo(int).min, -np.inf, np.inf)
+            return PolicyCost(np.iinfo(int).min, -np.inf, -np.inf)
         
         es_cost[-1] = defaultdict(empty_policy)
         #set final admissable states
         for es in self._final_ext_states():
-            qf, cost = self._cost(gen_levels, es.state, self.state_final, *prices[-1, IDX_POWER:])
-            es_cost[-1][es]=PolicyCost(self.state_final, qf, cost)
+            qf, cost = self._cost(gen_levels, es.state, es.state, *prices[-1, IDX_POWER:])
+            es_cost[-1][es]=PolicyCost(es.state, qf, cost)
         dfs=prices[1:,IDX_DISCOUNT]/ prices[:-1,IDX_DISCOUNT]
         #iterate backwards
         for t in reversed(range(nt-1)):
@@ -440,12 +444,12 @@ class Valuation(object):
             ext_states.add(self._build_ext_state(state, min(d,n), r, n))
         return ext_states
     
-    def _rng_durtation(self):
+    def _rng_duration(self):
         #range of admissable duration states
-        off, on = 0, max(self._states)
+        off, on = 0, max(self._states())
         rng_duration = defaultdict(int)
         rng_duration[off] = list(range(-max(self.feasible_min_off,1),0))
-        rng_duration[on] = list(range(1, max(self.feasible_min_on+1),2))
+        rng_duration[on] = list(range(1, max(self.feasible_min_on+1,2)))
         return rng_duration
     
     def _rng_restarts(self):

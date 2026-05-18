@@ -1,6 +1,8 @@
 import sys
 import numpy as np
 import itertools
+from Descriptors.descriptors import(ArrayProperty, CallableProperty,FloatProperty, DateTimeProperty, EnumProperty,
+                                    TypedProperty)
 
 #Constants
 EXERCISE_HALF_HOURLY= 'HALF_HOURLY'
@@ -17,18 +19,18 @@ class Capacity():
     emissions_factor = FloatProperty('emissions_factor', positive=True )
     f_ramp_rate = CallableProperty('f_ramp_rate', allow_scalar=True)
 
-    def __init__(self, gen_levels, f_efficiency, emissions_factor, f_ramp_rate):
+    def __init__(self, gen_levels, efficiency, emissions_factor, ramp_rate):
         self.gen_levels = gen_levels
         if any(self.gen_levels < 0):
             msg = 'gen_levels must be non-negative, but found gen_levels={}'.format(self.gen_levels)
             raise ValueError(msg)
         
-        self.f_efficiency = f_efficiency
+        self.f_efficiency = efficiency
         self.emissions_factor = emissions_factor
         if not ramp_rate:
-            ramp_rate= np.max(gen_levls)
+            ramp_rate= np.max(gen_levels)
 
-        self.f_ramp_rate = f_ramp_rate
+        self.f_ramp_rate = ramp_rate
 
 class Time:
     """
@@ -86,7 +88,7 @@ class PlantParameters:
     def __init__(self, gen_levels, efficiency, **kwargs):
         self.capacity = Capacity(gen_levels, efficiency, 
                                  kwargs.pop('emissions_factor', 1.0), 
-                                 kwargs.pop('f_ramp_rate', np.max(gen_levels))
+                                 kwargs.pop('ramp_rate', np.max(gen_levels))
                                  )
         self.time=Time(
             kwargs.pop('min_on', 1),
@@ -98,9 +100,12 @@ class PlantParameters:
         )
 
         self.cost = Cost(
-            kwargs.pop('startup', 0),
-            kwargs.pop('shutdown', 0),
-            kwargs.pop('running', 0)
+            *[kwargs.pop(a,d) for a, d in 
+              [
+            ('startup', 0),
+            ('shutdown', 0),
+            ('running', 0)
+            ]]
         )
 
 class Tolling:
@@ -124,14 +129,42 @@ class Tolling:
     carbon_market: object
         An instance of the carbon market class that contains the carbon market parameters.
     """
+    start_date=DateTimeProperty('start_date')
+    end_date=DateTimeProperty('end_date')
+    exercise_type=EnumProperty('exercise_type', 
+                               [EXERCISE_HALF_HOURLY, EXERCISE_HOURLY, EXERCISE_DAILY, EXERCISE_BLOCK])
+    load_type = EnumProperty(
+        'load_type',
+        [LOAD_BASE, LOAD_PEAK, LOAD_EXT_PEAK]
+    )
+    plant_params = TypedProperty('parameters', PlantParameters)
     def __init__(self, start_date, end_date, exercise_type, load_type, params,
                  power_market, fuel_market, carbon_market=None):
         self.start_date = start_date
         self.end_date = end_date
         self.exercise_type = exercise_type
         self.load_type = load_type
-        self.params = params
+        self.plant_params = params
         self.power_market = power_market
         self.fuel_market = fuel_market
         self.carbon_market = carbon_market
+
+class Cost:
+    startup = FloatProperty('startup', positive=True)
+    shutdown = FloatProperty('shutdown', positive=True)
+    f_run = CallableProperty('f_run', allow_scalar=True)
+
+    def __init__(self, startup, shutdown, running):
+        self.startup = startup
+        self.shutdown = shutdown
+        self.f_run = running
+
+    def __eq__(self, other):
+        if type(other)==type(self):
+            return (self.startup==other.startup
+                    and self.shutdown==other.shutdown
+                    and all(self.f_run(x)==other.f_run(x) 
+                            for x in np.linspace(0, 1000, 100)))
+        return False
+        
 
