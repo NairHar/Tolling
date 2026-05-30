@@ -113,7 +113,7 @@ class Valuation(object):
         self.on_state=self.tolling.plant_params.time.ramp_up+1
         #set up
         self.feasible_periods=len(self._generate_times())
-        self.feasible_restarts=self._feasible_restarts()
+        self.feasible_restarts=self._feasible_restarts()#time_period/max(ramp_up, ramp_down)
         self.feasible_min_on, self.feasible_min_off =\
             self._feasible_min_onoff()
         self.state_graph = self._build_state_graph()
@@ -141,7 +141,7 @@ class Valuation(object):
     
     def _states(self):
         rdn, rup=self._ramp_levels()
-        return list(range(rdn, rup + 2))
+        return list(range(rdn, rup + 2))#why is this plus 2? because of the off state; for example, if ramp_up=2, then states are -2, -1, 0, 1, 2, 3 (on state)
     
     def _to_onoff(self, u):
         return 1 if u == self.on_state else (-1 if u==0 else 0)
@@ -163,7 +163,7 @@ class Valuation(object):
     def _build_state_graph(self):
         #build the state graph
         g = nx.DiGraph()
-        states = self._states()
+        states = self._states()#list from ramp_down to ramp_up, including off and on states
         nx.add_cycle(g, states)
         nx.add_cycle(g,[0])
         nx.add_cycle(g, [max(states)])
@@ -381,7 +381,7 @@ class Valuation(object):
         gen_levels = self.tolling.plant_params.capacity.gen_levels
         nt=len(prices)
         #[time, {es0 -> (u1, q0, cost0)}]
-        es_cost = np.empty(shape=nt,dtype=object)
+        es_cost = np.empty(shape=nt,dtype=object)#Extended state cost for each period; dict of es0 -> (u1, q0, cost0)
 
         def empty_policy():
             return PolicyCost(np.iinfo(int).min, -np.inf, -np.inf)
@@ -432,12 +432,38 @@ class Valuation(object):
 
     def _final_ext_states(self):
         #determine the final admissable extended states.
-        rng_duration = self._rng_duration()
+        rng_duration = self._rng_duration()# 
+        # what are the admissable duration states for on and off states; 
+        # for example, if min_on=2, then for on state, duration can be 1 or 2; 
+        # if min_off=3, then for off state, duration can be -1, -2, or -3
         rng_restarts = self._rng_restarts()
+        # what is range of admissable restarts; 
+        # for example, if max_restarts=2, then restarts can be 0, 1, or 2; 
+        # if max_restarts=0, then restarts can be only 0
         rng_periods = self._rng_periods()
+        # what is periods? 
+        # number of periods the plant has been operating; for example, 
+        # if max_periods=3, then periods can be 0, 1, 2, or 3;
+        # what is 0,1, 2, 3?
+        # is periods time the plant has been operating? 
+        # or time since last start up? or time since last shut down? or something else?
+        # if it's time the plant has been operating, then for example, if max_periods=3,
+        #  then periods can be 0, 1, 2, or 3; if max_periods=0, then periods can be only 0
+        # what is range of admissable periods;
+        # for example, if max_periods=3, then periods can be 0, 1, 2, or 3;
+        # if max_periods=0, then periods can be only 0
         state = self.state_final
         ext_states=set()
         is_on=self._is_on(state)
+        # what does -1 duration means? 
+        # if min_off=3, then for off state, duration can be -1, -2, or -3; 
+        # does this mean that the plant has been off for 1, 2, or 3 periods?
+        # if min_on=2, then for on state, duration can be 1 or 2; 
+        # does this mean that the plant has been on for 1 or 2 periods?
+        # for example, if min_on=2, then for on state, duration can be 1 or 2;
+        # if min_off=3, then for off state, duration can be -1, -2, or -3;
+        # if state is on, then duration can be 1 or 2; if state is off, 
+        # then duration can be -1, -2, or -3;
         for d, r, n in product(rng_duration[state], rng_restarts, rng_periods):
             if is_on and not n:
                 continue
@@ -445,7 +471,7 @@ class Valuation(object):
         return ext_states
     
     def _rng_duration(self):
-        #range of admissable duration states
+        #range of admissable duration for off and on states
         off, on = 0, max(self._states())
         rng_duration = defaultdict(int)
         rng_duration[off] = list(range(-max(self.feasible_min_off,1),0))
